@@ -1,21 +1,26 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFrameworks>netstandard2.0;netstandard2.1</TargetFrameworks>
+    <TargetFrameworks>netstandard2.0;netstandard2.1;net6.0;net7.0</TargetFrameworks>
+    <RootNamespace>GrokNet</RootNamespace>
     <PackageId>grok.net</PackageId>
     <Authors>RMarusyk</Authors>
     <Description>Cross platform .NET grok implementation</Description>
     <License>https://github.com/Marusyk/grok.net/blob/main/LICENSE</License>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageIconUrl>https://raw.githubusercontent.com/Marusyk/grok.net/main/Grok.png</PackageIconUrl>
+    <PackageIcon>Grok.png</PackageIcon>
     <PackageProjectUrl>https://github.com/Marusyk/grok.net</PackageProjectUrl>
     <RepositoryUrl>https://github.com/Marusyk/grok.net</RepositoryUrl>
     <PackageTags>grok;grok-parser;grok-patterns;grokking;c-sharp-library</PackageTags>
+    <EnablePackageValidation>true</EnablePackageValidation>
+    <PackageValidationBaselineVersion>1.1.0</PackageValidationBaselineVersion>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <DebugType>embedded</DebugType>
   </PropertyGroup>
 
   <PropertyGroup>
-    <Version>1.1.0</Version>
-</PropertyGroup>
+    <Version>2.0.0</Version>
+  </PropertyGroup>
 
   <ItemGroup>
     <None Remove="grok-patterns" />
@@ -23,6 +28,15 @@
 
   <ItemGroup>
     <EmbeddedResource Include="grok-patterns" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="1.1.1" PrivateAssets="All" />
+    <PackageReference Include="PCRE.NET" Version="0.20.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\Grok.png" Pack="true" Visible="false" PackagePath="\" />
   </ItemGroup>
 
 </Project>

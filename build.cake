@@ -1,63 +1,148 @@
+#addin nuget:?package=Cake.Coveralls&version=1.1.0
+#addin nuget:?package=Cake.Coverlet&version=3.0.4
+#addin nuget:?package=Cake.Powershell&version=2.0.0&loaddependencies=true
+
+#tool nuget:?package=coveralls.io&version=1.4.2
+
 var target = Argument("target", "Default");
 var configuration = Argument("configuration", "Release");
 
-var artifactsDir = "./artifacts/";
-var projectFile = "./src/Grok.Net/Grok.Net.csproj";
+var coverallsRepoToken = EnvironmentVariable("COVERALLS_REPO_TOKEN");
+var nugetApiKey = EnvironmentVariable("NUGET_API_KEY");
+var nugetApiUrl = EnvironmentVariable("NUGET_API_URL");
+var psNugetApiKey = EnvironmentVariable("PS_NUGET_API_KEY");
+
+DirectoryPath artifactsDir = Directory("./artifacts/");
+var testResultsDir = artifactsDir.Combine("test-results");
+var psModuleDir = artifactsDir.Combine("Grok");
+var testCoverageOutputFilePath = testResultsDir.CombineWithFilePath("OpenCover.xml");
+
+var projectFileMain = File("./src/Grok.Net/Grok.Net.csproj");
+var projectFilePowerShell = File("./src/Grok.Net.PowerShell/Grok.Net.PowerShell.csproj");
+
 
 Task("Clean")
     .Does(() =>
 {
     CleanDirectory(artifactsDir);
-
-    if(BuildSystem.IsLocalBuild)
-    {
-        CleanDirectories(GetDirectories("./**/obj") + GetDirectories("./**/bin"));
-    }
+    CleanDirectories(GetDirectories("./**/obj") + GetDirectories("./**/bin"));
 });
 
-Task("Restore-NuGet-Packages")
+Task("Restore")
     .IsDependentOn("Clean")
     .Does(() =>
 {
-    DotNetCoreRestore(projectFile);
+    DotNetRestore(projectFileMain);
+    DotNetRestore(projectFilePowerShell);
 });
 
 Task("Build")
-    .IsDependentOn("Restore-NuGet-Packages")
+    .IsDependentOn("Restore")
     .Does(() =>
 {
-    DotNetCoreBuild(projectFile, new DotNetCoreBuildSettings()
+    var settings = new DotNetBuildSettings
     { 
         Configuration = configuration,
-        NoRestore = true
-    });
+        NoRestore = true,
+        NoLogo = true
+    };
+    DotNetBuild(projectFileMain, settings);
+    DotNetBuild(projectFilePowerShell, settings);
 });
 
-Task("Run-Unit-Tests")
+Task("Test")
     .IsDependentOn("Build")
     .Does(() =>
 {
-    var projectFile = Directory("./src/Grok.Net.Tests") + File("Grok.Net.Tests.csproj");
-    DotNetCoreTest(System.IO.Path.GetFullPath(projectFile), new DotNetCoreTestSettings()
+    var settings = new DotNetTestSettings
     {
-        Configuration = configuration
+        Configuration = configuration,
+        NoLogo = true
+    };
+
+    DotNetTest("./src/Grok.Net.Tests/Grok.Net.Tests.csproj", settings, new CoverletSettings
+    {
+        CollectCoverage = true,
+        CoverletOutputFormat = CoverletOutputFormat.opencover,
+        CoverletOutputDirectory = testResultsDir,
+        CoverletOutputName = testCoverageOutputFilePath.GetFilename().ToString()
     });
 });
 
-Task("NuGet-Pack")
-    .IsDependentOn("Run-Unit-Tests")
+Task("UploadTestReport")
+    .IsDependentOn("Test")
+    .WithCriteria((context) => FileExists(testCoverageOutputFilePath))
+    .WithCriteria(!string.IsNullOrWhiteSpace(coverallsRepoToken))
+    .WithCriteria((context) => !BuildSystem.IsPullRequest)
+    .WithCriteria((context) => !BuildSystem.IsLocalBuild)
     .Does(() =>
 {
-    DotNetCorePack(projectFile, new DotNetCorePackSettings()
+    CoverallsIo(testCoverageOutputFilePath, new CoverallsIoSettings
+    {
+        RepoToken = coverallsRepoToken,
+        Debug = true
+    });
+});
+
+Task("NuGetPack")
+    .IsDependentOn("Test")
+    .Does(() =>
+{
+    DotNetPack(projectFileMain, new DotNetPackSettings
     {
         Configuration = configuration,
         NoRestore = true,
         NoBuild = true,
+        NoLogo = true,
         OutputDirectory = artifactsDir
     });
 });
 
+Task("NuGetPush")
+    .IsDependentOn("NuGetPack")
+    .WithCriteria(!string.IsNullOrWhiteSpace(nugetApiUrl))
+    .WithCriteria(!string.IsNullOrWhiteSpace(nugetApiKey))
+    .Does(() =>
+{
+    var packages = GetFiles(string.Concat(artifactsDir, "/", "*.nupkg"));
+    DotNetNuGetPush(packages.First(), new DotNetNuGetPushSettings
+    {
+        Source = nugetApiUrl,
+        ApiKey = nugetApiKey
+    });
+});
+
+Task("PsModulePack")
+    .IsDependentOn("Test")
+    .Does(() =>
+{
+    DotNetPublish(projectFilePowerShell, new DotNetPublishSettings
+    {
+        Configuration = configuration,
+        NoRestore = true,
+        NoBuild = true,
+        NoLogo = true,
+        OutputDirectory = psModuleDir
+    });
+});
+
+Task("PsModulePush")
+    .IsDependentOn("PsModulePack")
+    .WithCriteria(!string.IsNullOrWhiteSpace(psNugetApiKey))
+    .Does(() =>
+{
+    StartPowershellScript("Publish-Module", new PowershellSettings()
+        .WithModule("PowerShellGet")
+        .BypassExecutionPolicy()
+        .WithArguments(args =>
+        {
+            args.Append("Path", psModuleDir.FullPath)
+                .AppendSecret("NuGetApiKey", psNugetApiKey)
+                .Append("Force", "");
+        }));
+});
+
 Task("Default")
-    .IsDependentOn("NuGet-Pack");
+    .IsDependentOn("Test");
 
 RunTarget(target);

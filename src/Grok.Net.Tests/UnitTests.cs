@@ -1,10 +1,21 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Reflection;
 using GrokNet;
+using PCRE;
 using Xunit;
 
 namespace GrokNetTests
 {
     public class UnitTests
     {
+        private static Stream ReadCustomFile() =>
+            File.OpenRead($"Resources{Path.DirectorySeparatorChar}grok-custom-patterns");
+        private static Stream ReadCustomFileWithInvalidPatterns() =>
+            File.OpenRead($"Resources{Path.DirectorySeparatorChar}grok-custom-patterns-invalid");
+
         [Fact]
         public void Parse_Empty_Logs_Not_Throws()
         {
@@ -27,7 +38,7 @@ namespace GrokNetTests
             // Arrange
             const string grokPattern = "%{MONTHDAY:month}-%{MONTHDAY:day}-%{MONTHDAY:year} %{TIME:timestamp};%{WORD:id};%{LOGLEVEL:loglevel};%{WORD:func};%{GREEDYDATA:msg}";
             const string logs = @"06-21-19 21:00:13:589241;15;INFO;main;DECODED: 775233900043 DECODED BY: 18500738 DISTANCE: 1.5165
-               06-21-19 21:00:13:589265;156;WARN;main;DECODED: 775233900043 EMPTY DISTANCE: --------";
+            06-21-19 21:00:13:589265;156;WARN;main;DECODED: 775233900043 EMPTY DISTANCE: --------";
             var sut = new Grok(grokPattern);
 
             // Act
@@ -43,7 +54,7 @@ namespace GrokNetTests
         {
             // Arrange
             const string logs = @"06-21-19 21:00:13:589241;15;INFO;main;DECODED: 775233900043 DECODED BY: 18500738 DISTANCE: 1.5165
-               06-21-19 21:00:13:589265;156;WARN;main;DECODED: 775233900043 EMPTY DISTANCE: --------";
+            06-21-19 21:00:13:589265;156;WARN;main;DECODED: 775233900043 EMPTY DISTANCE: --------";
             const string month = "06";
             const string day = "21";
             const string year = "19";
@@ -72,7 +83,7 @@ namespace GrokNetTests
         {
             // Arrange
             const string logs = @"06-21-19 21:00:13:589241;15;INFO;main;DECODED: 775233900043 DECODED BY: 18500738 DISTANCE: 1.5165
-               06-21-19 21:00:13:589265;156;WARN;main;DECODED: 775233900043 EMPTY DISTANCE: --------";
+            06-21-19 21:00:13:589265;156;WARN;main;DECODED: 775233900043 EMPTY DISTANCE: --------";
             var sut = new Grok("%{MONTHDAY:month}-%{MONTHDAY:day}-%{MONTHDAY:year} %{TIME:timestamp};%{WORD:id};%{LOGLEVEL:loglevel};%{WORD:func};%{GREEDYDATA:msg}");
 
             // Act
@@ -122,7 +133,7 @@ namespace GrokNetTests
         [InlineData("2001:db8:85a3:0:0:8a2e:370:7334")]
         [InlineData("2001:db8:85a3::8a2e:370:7334")]
         [InlineData("::1")] // Loopback
-        [InlineData("::")]  // Default route
+        [InlineData("::")] // Default route
         public void Parse_IPv6_Pattern(string ipAddress)
         {
             // Arrange
@@ -176,14 +187,39 @@ namespace GrokNetTests
         [InlineData("122001")]
         [InlineData("122 001")]
         [InlineData("235 012")]
-        public void LoadCustomPatterns(string zipcode)
+        public void Load_Custom_Patterns(string zipcode)
         {
             // Arrange
             const string email = "Bob.Davis@microsoft.com";
-            var sut = new Grok("%{ZIPCODE:zipcode}:%{EMAILADDRESS:email}");
+
+            var sut = new Grok("%{ZIPCODE:zipcode}:%{EMAILADDRESS:email}", ReadCustomFile());
 
             // Act
-            var grokResult = sut.Parse($"{zipcode}:{email}");
+            GrokResult grokResult = sut.Parse($"{zipcode}:{email}");
+
+            // Assert
+            Assert.Equal(zipcode, grokResult[0].Value);
+            Assert.Equal(email, grokResult[1].Value);
+        }
+
+        [Theory]
+        [InlineData("122001")]
+        [InlineData("122 001")]
+        [InlineData("235 012")]
+        public void Load_Custom_Patterns_From_IDictionary(string zipcode)
+        {
+            // Arrange
+            var customPatterns = new Dictionary<string, string>
+            {
+                { "ZIPCODE", "[1-9]{1}[0-9]{2}\\s{0,1}[0-9]{3}" },
+                { "FLOAT", "[+-]?([0-9]*[.,]}?[0-9]+)" }
+            };
+            const string email = "Bob.Davis@microsoft.com";
+
+            var sut = new Grok("%{ZIPCODE:zipcode}:%{EMAILADDRESS:email}", customPatterns);
+
+            // Act
+            GrokResult grokResult = sut.Parse($"{zipcode}:{email}");
 
             // Assert
             Assert.Equal(zipcode, grokResult[0].Value);
@@ -191,28 +227,202 @@ namespace GrokNetTests
         }
 
         [Fact]
-        public void LoadWrongCustomPatterns()
+        public void Load_Invalid_Custom_Patterns()
+        {
+            Assert.Throws<FormatException>(() => new Grok("%{WRONGPATTERN1:duration}:%{WRONGPATTERN2:client}", ReadCustomFileWithInvalidPatterns()));
+        }
+
+        [Fact]
+        public void Parse_Pattern_With_Type_Should_Parse_To_Specified_Type()
         {
             // Arrange
-            const string client = "192.168.1.1";
-            const string duration = "1";
+            const int intValue = 28;
+            const double floatValue = 3000.5F;
+            var dateTime = new DateTime(2010, 10, 10);
 
-            var sut = new Grok("%{WRONGPATTERN1:duration}:%{WRONGPATTERN2:client}");
+            var sut = new Grok("%{INT:int_value:int}:%{DATESTAMP:date_time:datetime}:%{FLOAT:float_value:float}", ReadCustomFile());
 
-            try
+            // Act
+            GrokResult grokResult = sut.Parse($"{intValue}:{dateTime:dd-MM-yyyy HH:mm:ss}:{floatValue}");
+
+            // Assert
+            Assert.Equal("int_value", grokResult[0].Key);
+            Assert.Equal(intValue, grokResult[0].Value);
+            Assert.IsType<int>(grokResult[0].Value);
+
+            Assert.Equal("date_time", grokResult[1].Key);
+            Assert.Equal(dateTime, grokResult[1].Value);
+            Assert.IsType<DateTime>(grokResult[1].Value);
+
+            Assert.Equal("float_value", grokResult[2].Key);
+            Assert.Equal(floatValue, grokResult[2].Value);
+            Assert.IsType<double>(grokResult[2].Value); // Float converts to double actually
+        }
+
+        [Theory]
+        [InlineData("INT", "2147483648", "int")]
+        [InlineData("DATESTAMP", "11-31-2021 02:08:58", "datetime")]
+        [InlineData("WRONGFLOAT", "notanumber", "float")]
+        public void Parse_With_Type_Parse_Exception_Should_Ignore_Type(string regex, string parse, string toType)
+        {
+            // Arrange
+            var sut = new Grok($"%{{{regex}:{nameof(parse)}:{toType}}}", ReadCustomFile());
+
+            // Act
+            GrokResult grokResult = sut.Parse($"{parse}");
+
+            // Assert
+            Assert.Equal(nameof(parse), grokResult[0].Key);
+            Assert.Equal(parse, grokResult[0].Value);
+        }
+
+        [Fact]
+        public void Exception_When_Parsing_NullGrokPattern()
+        {
+            // Arrange
+            const string grokPattern = null;
+
+            // Act, Assert
+            Assert.Throws<ArgumentNullException>(() => new Grok(grokPattern));
+        }
+
+        [Theory]
+        [InlineData("dGVzdCBzdHJpbmc=")]
+        [InlineData("")]
+        [InlineData("VGhpcyBpcyBhIHNpbXBsZSBBU0NJSSBCYXNlNjQgZXhhbXBsZSBmb3IgU3RhY2tPdmVyZmxvdy4=")]
+        [InlineData("TG9yZW0gSXBzdW0gaXMgc2ltcGx5IGR1bW15IHRleHQgb2YgdGhlIHByaW50aW5nIGFuZCB0eXBlc2V0dGluZyBpbmR1c3RyeS4gTG9yZW0gSXBzdW0gaGFzIGJlZW4gdGhlIGluZHVzdHJ5J3Mgc3RhbmRhcmQgZHVtbXkgdGV4dCBldmVyIHNpbmNlIHRoZSAxNTAwcywgd2hlbiBhbiB1bmtub3duIHByaW50ZXIgdG9vayBhIGdhbGxleSBvZiB0eXBlIGFuZCBzY3JhbWJsZWQgaXQgdG8gbWFrZSBhIHR5cGUgc3BlY2ltZW4gYm9vay4gSXQgaGFzIHN1cnZpdmVkIG5vdCBvbmx5IGZpdmUgY2VudHVyaWVzLCBidXQgYWxzbyB0aGUgbGVhcCBpbnRvIGVsZWN0cm9uaWMgdHlwZXNldHRpbmcsIHJlbWFpbmluZyBlc3NlbnRpYWxseSB1bmNoYW5nZWQuIEl0IHdhcyBwb3B1bGFyaXNlZCBpbiB0aGUgMTk2MHMgd2l0aCB0aGUgcmVsZWFzZSBvZiBMZXRyYXNldCBzaGVldHMgY29udGFpbmluZyBMb3JlbSBJcHN1bSBwYXNzYWdlcywgYW5kIG1vcmUgcmVjZW50bHkgd2l0aCBkZXNrdG9wIHB1Ymxpc2hpbmcgc29mdHdhcmUgbGlrZSBBbGR1cyBQYWdlTWFrZXIgaW5jbHVkaW5nIHZlcnNpb25zIG9mIExvcmVtIElwc3Vt")]
+        public void Parse_Base64String_Patterns(string base64String)
+        {
+            // Arrange
+            var sut = new Grok("%{BASE64STR:base64}");
+
+            // Act
+            GrokResult grokResult = sut.Parse(base64String);
+
+            // Assert
+            Assert.Equal("base64", grokResult[0].Key);
+            Assert.IsType<string>(grokResult[0].Value);
+            Assert.Equal(base64String, grokResult[0].Value);
+            Assert.Single(grokResult);
+        }
+
+        [Fact]
+        public void Parse_Multiline_String_As_A_Single_Line_With_Regex_Options_Specified()
+        {
+            // Arrange
+            const string timeKeyword = "loggingTime";
+            const string messageKeyword = "message";
+            const PcreOptions options = PcreOptions.Singleline;
+
+            var multilineGrok = new Grok($"%{{TIMESTAMP_ISO8601:{timeKeyword}}} %{{GREEDYDATA:{messageKeyword}}}", options);
+
+            const string logs = @"2023-02-21 04:15:26.349 Parsing output [221206045974]: [XXXX=9999]Got error: Dimension error at argument [0]
+            Node: X
+            Token: Y
+            Context: Sample text
+                Second line
+                    (Third one)";
+
+            // Act
+            GrokResult multilineResult = multilineGrok.Parse(logs);
+
+            // Assert
+            Assert.Equal("2023-02-21 04:15:26.349", multilineResult[0].Value);
+
+            var relevantMultilineObject = multilineResult[1].Value;
+            Assert.NotNull(relevantMultilineObject);
+
+            Assert.Contains("(Third one)", (string)relevantMultilineObject);
+        }
+
+        [Fact]
+        public void Load_Custom_Patterns_From_Stream_And_Parse_With_Regex_Options_Specified()
+        {
+            // Arrange
+            const PcreOptions options = PcreOptions.Singleline;
+            const string zipcode = "122001";
+            const string email = "Bob.Davis@microsoft.com";
+
+            var sut = new Grok("%{ZIPCODE:zipcode}:%{EMAILADDRESS:email}", ReadCustomFile(), options);
+
+            // Act
+            GrokResult grokResult = sut.Parse($"{zipcode}:{email}");
+
+            // Assert
+            Assert.Equal(zipcode, grokResult[0].Value);
+            Assert.Equal(email, grokResult[1].Value);
+        }
+
+        [Fact]
+        public void Load_Custom_Patterns_And_Parse_With_Regex_Options_Specified()
+        {
+            // Arrange
+            const PcreOptions options = PcreOptions.Singleline;
+            const string zipcode = "122001";
+            var customPatterns = new Dictionary<string, string>
             {
-                // Act
-                var grokResult = sut.Parse($"{duration}:{client}");
+                { "ZIPCODE", "[1-9]{1}[0-9]{2}\\s{0,1}[0-9]{3}" },
+                { "FLOAT", "[+-]?([0-9]*[.,]}?[0-9]+)" }
+            };
+            const string email = "Bob.Davis@microsoft.com";
 
-                // Assert (checks if regex is invalid)
-                Assert.Equal("", grokResult[0].Value);
-                Assert.Equal("", grokResult[1].Value);
-            }
-            catch
-            {
-                // Assert (checks if pattern is invalid)
-                Assert.Throws<System.FormatException>(() => sut.Parse($"{duration}:{client}"));
-            }
+            var sut = new Grok("%{ZIPCODE:zipcode}:%{EMAILADDRESS:email}", customPatterns, options);
+
+            // Act
+            GrokResult grokResult = sut.Parse($"{zipcode}:{email}");
+
+            // Assert
+            Assert.Equal(zipcode, grokResult[0].Value);
+            Assert.Equal(email, grokResult[1].Value);
+        }
+
+        [Fact]
+        public void GrokResult_To_Dictionary()
+        {
+            // Arrange
+            const string logs = @"Bob.Davis@microsoft.com:Free as in Free Beer
+            Davis.Bob@microsoft.com:EMPTY
+            DavisBob@microsoft.com:True Man";
+            var sut = new Grok(@"%{EMAILADDRESS:email}:%{GREEDYDATA:comment}");
+
+            // Act
+            IReadOnlyDictionary<string, IEnumerable<object>> grokResult = sut.Parse(logs).ToDictionary();
+
+            // Assert
+            Assert.NotNull(grokResult);
+            Assert.Equal(2, grokResult.Count);
+            Assert.Equal(3, grokResult["email"].Count());
+            Assert.Equal(3, grokResult["comment"].Count());
+            Assert.True(grokResult.ContainsKey("email"));
+            Assert.True(grokResult.ContainsKey("comment"));
+        }
+
+        [Fact]
+        public void InvalidPattern_ThrowsException()
+        {
+            // Arrange
+            const string logs = @"06-21-19 21:00:13:589241;15;INFO;main;DECODED: 775233900043 DECODED BY: 18500738 DISTANCE: 1.5165
+            06-22-19 22:00:13:589265;156;WARN;main;DECODED: 775233900043 EMPTY DISTANCE: --------";
+
+            var sut = new Grok("%{MONTHDA:month}-%{MONTHDAY:day}-%{MONTHDAY:year} %{TIME:timestamp};%{WORD:id};%{LOGLEVEL:loglevel};%{WORD:func};%{GREEDYDATA:msg}");
+
+            // Act & Assert
+            FormatException exception = Assert.Throws<FormatException>(() => sut.Parse(logs));
+            Assert.Contains("Invalid Grok pattern: Pattern 'MONTHDA' not found.", exception.Message);
+        }
+
+        [Fact]
+        public void InvaidPattern_With_Custom_Patterns()
+        {
+            // Arrange
+            const string zipcode = "122001";
+            const string email = "Bob.Davis@microsoft.com";
+
+            var sut = new Grok("%{ZIPCOD:zipcode}:%{EMAILADDRESS:email}", ReadCustomFile());
+
+            // Act & Assert
+            FormatException exception = Assert.Throws<FormatException>(() => sut.Parse($"{zipcode}:{email}"));
+            Assert.Contains("Invalid Grok pattern: Pattern 'ZIPCOD' not found.", exception.Message);
         }
     }
 }
